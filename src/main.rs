@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs};
+use std::{collections::HashMap, fs};
 
 use color_eyre::eyre::{self, Result};
 use grammers_client::{Client, Config, SignInError};
@@ -104,12 +104,17 @@ async fn main() -> Result<()> {
 
     let mut messages = client_handle.search_messages(&chat).query("https://t.me/");
 
-    let mut usernames = HashSet::new();
+    let mut usernames: HashMap<String, (LinkType, usize)> = HashMap::new();
     while let Some(message) = messages.next().await? {
         let text = message.text();
 
-        if let Some(username) = extract_username(text) {
-            usernames.insert(username);
+        if let Some(username) = extract(text) {
+            usernames
+                .entry(username.to_string())
+                .and_modify(|(_, count)| {
+                    *count += 1;
+                })
+                .or_insert((username, 1));
         }
     }
 
@@ -124,10 +129,42 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize, Serialize, Hash, PartialEq, Eq, Debug)]
+enum LinkType {
+    Username(String),
+    Hash(String),
+}
+
+impl ToString for LinkType {
+    fn to_string(&self) -> String {
+        match self {
+            LinkType::Username(username) => username.to_string(),
+            LinkType::Hash(hash) => hash.to_string(),
+        }
+    }
+}
+
+fn extract(link: &str) -> Option<LinkType> {
+    extract_username(link)
+        .map(LinkType::Username)
+        .or_else(|| extract_hash(link).map(LinkType::Hash))
+}
+
 fn extract_username(link: &str) -> Option<String> {
     let regex = Regex::new(r"https://t.me/([a-zA-Z0-9_]+)").unwrap();
     let captures = regex.captures(link)?;
     let group_name = captures.get(1)?.as_str();
+    match group_name {
+        "joinchat" | "addstickers" | "addemoji" | "addtheme" | "share" | "socks" | "proxy"
+        | "bg" | "login" | "invoice" | "setlanguage" | "confirmphone" | "path" | "c" => None,
+        _ => Some(group_name.to_string()),
+    }
+}
+
+fn extract_hash(link: &str) -> Option<String> {
+    let regex = Regex::new(r"https://t.me/(joinchat/|\+)([a-zA-Z0-9_-]+)").unwrap();
+    let captures = regex.captures(link)?;
+    let group_name = captures.get(2)?.as_str();
     Some(group_name.to_string())
 }
 
@@ -165,22 +202,34 @@ mod tests {
     #[test]
     fn test_extract_username() {
         let link = "https://t.me/grammers";
-        let username = extract_username(link);
-        assert_eq!(username, Some("grammers".to_string()));
+        let username = extract(link);
+        assert_eq!(username, Some(LinkType::Username("grammers".to_string())));
     }
 
     #[test]
     fn test_extract_username_with_query() {
         let link = "https://t.me/grammers?start=123";
-        let username = extract_username(link);
-        assert_eq!(username, Some("grammers".to_string()));
+        let username = extract(link);
+        assert_eq!(username, Some(LinkType::Username("grammers".to_string())));
     }
 
     #[test]
-    #[ignore]
     fn test_joined_username() {
         let link = "https://t.me/joinchat/USpx-sviNKIj408g";
-        let username = extract_username(link);
-        assert_eq!(username, Some("USpx-sviNKIj408g".to_string()));
+        let username = extract(link);
+        assert_eq!(
+            username,
+            Some(LinkType::Hash("USpx-sviNKIj408g".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_invite_link() {
+        let link = "https://t.me/+_DGX2NIt9IhkNTVk";
+        let username = extract(link);
+        assert_eq!(
+            username,
+            Some(LinkType::Hash("_DGX2NIt9IhkNTVk".to_string()))
+        );
     }
 }
