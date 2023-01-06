@@ -68,7 +68,13 @@ impl ApiCredentials {
     }
 }
 
-type Usernames = HashMap<String, (LinkType, usize)>;
+#[derive(Debug, Deserialize, Serialize)]
+struct Username {
+    username: LinkType,
+    count: usize,
+}
+
+type Usernames = HashMap<String, Username>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -106,17 +112,25 @@ async fn main() -> Result<()> {
 
     let mut usernames: Usernames = HashMap::new();
 
+    let mut count = 0;
     let mut messages = client_handle.iter_messages(&chat);
     while let Some(message) = messages.next().await? {
         extract_link(&message, &mut usernames);
         extract_mentions(&message, &mut usernames);
+        count += 1;
     }
+
+    let mut usernames: Vec<_> = usernames.into_iter().map(|(_, v)| v).collect();
+    usernames.sort_by(|a, b| b.count.cmp(&a.count));
 
     let json = serde_json::to_string_pretty(&usernames)?;
     let filename = format!("{}.json", username);
     fs::write(filename, json)?;
 
-    println!("Saved {} usernames to {}.json", usernames.len(), username);
+    println!(
+        "Saved {} usernames from {count} messages to {username}.json",
+        usernames.len(),
+    );
 
     Ok(())
 }
@@ -126,10 +140,10 @@ fn extract_link(message: &Message, usernames: &mut Usernames) {
     if let Some(username) = extract(text) {
         usernames
             .entry(username.to_string().to_lowercase())
-            .and_modify(|(_, count)| {
-                *count += 1;
+            .and_modify(|u| {
+                u.count += 1;
             })
-            .or_insert((username, 1));
+            .or_insert(Username { username, count: 1 });
     }
 }
 
@@ -152,10 +166,10 @@ fn extract_mentions(message: &Message, usernames: &mut Usernames) {
 
             usernames
                 .entry(username.to_string())
-                .and_modify(|(_, count)| {
-                    *count += 1;
+                .and_modify(|u| {
+                    u.count += 1;
                 })
-                .or_insert((username, 1));
+                .or_insert(Username { username, count: 1 });
         }
     }
 }
