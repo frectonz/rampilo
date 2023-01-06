@@ -3,6 +3,7 @@ use std::{collections::HashMap, fs};
 use color_eyre::eyre::{self, Result};
 use grammers_client::{Client, Config, SignInError};
 use grammers_session::Session;
+use grammers_tl_types::enums::MessageEntity;
 use inquire::{validator::Validation, Password, Text};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -84,7 +85,6 @@ async fn main() -> Result<()> {
         params: Default::default(),
     })
     .await?;
-
     println!("Connected!");
 
     let is_authorized = client.is_authorized().await?;
@@ -102,12 +102,11 @@ async fn main() -> Result<()> {
     let chat = maybe_chat
         .ok_or_else(|| eyre::eyre!("Could not find a chat with the username {}", username))?;
 
-    let mut messages = client_handle.search_messages(&chat).query("https://t.me/");
-
     let mut usernames: HashMap<String, (LinkType, usize)> = HashMap::new();
+
+    let mut messages = client_handle.search_messages(&chat).query("https://t.me/");
     while let Some(message) = messages.next().await? {
         let text = message.text();
-
         if let Some(username) = extract(text) {
             usernames
                 .entry(username.to_string())
@@ -115,6 +114,35 @@ async fn main() -> Result<()> {
                     *count += 1;
                 })
                 .or_insert((username, 1));
+        }
+    }
+
+    let mut messages = client_handle.search_messages(&chat).query("@");
+    while let Some(message) = messages.next().await? {
+        let text = message.text();
+
+        let empty = Vec::<MessageEntity>::new();
+        let entities: &Vec<MessageEntity> = message.fmt_entities().unwrap_or(&empty);
+
+        for entity in entities {
+            if let MessageEntity::Mention(e) = entity {
+                let offset = e.offset as usize;
+                let length = e.length as usize;
+
+                let points = text.encode_utf16().collect::<Vec<_>>();
+
+                let username = &points[offset..offset + length];
+                let username = String::from_utf16_lossy(username);
+                let username = username.trim_start_matches('@').trim();
+                let username = LinkType::Mention(username.to_string());
+
+                usernames
+                    .entry(username.to_string())
+                    .and_modify(|(_, count)| {
+                        *count += 1;
+                    })
+                    .or_insert((username, 1));
+            }
         }
     }
 
@@ -133,6 +161,7 @@ async fn main() -> Result<()> {
 enum LinkType {
     Username(String),
     Hash(String),
+    Mention(String),
 }
 
 impl ToString for LinkType {
@@ -140,6 +169,7 @@ impl ToString for LinkType {
         match self {
             LinkType::Username(username) => username.to_string(),
             LinkType::Hash(hash) => hash.to_string(),
+            LinkType::Mention(username) => username.to_string(),
         }
     }
 }
