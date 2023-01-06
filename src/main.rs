@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fs};
 
 use color_eyre::eyre::{self, Result};
-use grammers_client::{Client, Config, SignInError};
+use grammers_client::{types::Message, Client, Config, SignInError};
 use grammers_session::Session;
 use grammers_tl_types::enums::MessageEntity;
 use inquire::{validator::Validation, Password, Text};
@@ -68,6 +68,8 @@ impl ApiCredentials {
     }
 }
 
+type Usernames = HashMap<String, (LinkType, usize)>;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -102,51 +104,13 @@ async fn main() -> Result<()> {
     let chat = maybe_chat
         .ok_or_else(|| eyre::eyre!("Could not find a chat with the username {}", username))?;
 
-    let mut usernames: HashMap<String, (LinkType, usize)> = HashMap::new();
+    let mut usernames: Usernames = HashMap::new();
 
-    let mut messages = client_handle.search_messages(&chat).query("https://t.me/");
+    let mut messages = client_handle.iter_messages(&chat);
     while let Some(message) = messages.next().await? {
-        let text = message.text();
-        if let Some(username) = extract(text) {
-            usernames
-                .entry(username.to_string())
-                .and_modify(|(_, count)| {
-                    *count += 1;
-                })
-                .or_insert((username, 1));
-        }
+        extract_link(&message, &mut usernames);
+        extract_mentions(&message, &mut usernames);
     }
-
-    let mut messages = client_handle.search_messages(&chat).query("@");
-    while let Some(message) = messages.next().await? {
-        let text = message.text();
-
-        let empty = Vec::<MessageEntity>::new();
-        let entities: &Vec<MessageEntity> = message.fmt_entities().unwrap_or(&empty);
-
-        for entity in entities {
-            if let MessageEntity::Mention(e) = entity {
-                let offset = e.offset as usize;
-                let length = e.length as usize;
-
-                let points = text.encode_utf16().collect::<Vec<_>>();
-
-                let username = &points[offset..offset + length];
-                let username = String::from_utf16_lossy(username);
-                let username = username.trim_start_matches('@').trim();
-                let username = LinkType::Mention(username.to_string());
-
-                usernames
-                    .entry(username.to_string())
-                    .and_modify(|(_, count)| {
-                        *count += 1;
-                    })
-                    .or_insert((username, 1));
-            }
-        }
-    }
-
-    println!("Found {} usernames", usernames.len());
 
     let json = serde_json::to_string_pretty(&usernames)?;
     let filename = format!("{}.json", username);
@@ -155,6 +119,45 @@ async fn main() -> Result<()> {
     println!("Saved {} usernames to {}.json", usernames.len(), username);
 
     Ok(())
+}
+
+fn extract_link(message: &Message, usernames: &mut Usernames) {
+    let text = message.text();
+    if let Some(username) = extract(text) {
+        usernames
+            .entry(username.to_string().to_lowercase())
+            .and_modify(|(_, count)| {
+                *count += 1;
+            })
+            .or_insert((username, 1));
+    }
+}
+
+fn extract_mentions(message: &Message, usernames: &mut Usernames) {
+    let text = message.text();
+    let empty = Vec::<MessageEntity>::new();
+    let entities: &Vec<MessageEntity> = message.fmt_entities().unwrap_or(&empty);
+
+    for entity in entities {
+        if let MessageEntity::Mention(e) = entity {
+            let offset = e.offset as usize;
+            let length = e.length as usize;
+
+            let points = text.encode_utf16().collect::<Vec<_>>();
+
+            let username = &points[offset..offset + length];
+            let username = String::from_utf16_lossy(username);
+            let username = username.trim_start_matches('@').trim().to_lowercase();
+            let username = LinkType::Mention(username.to_string());
+
+            usernames
+                .entry(username.to_string())
+                .and_modify(|(_, count)| {
+                    *count += 1;
+                })
+                .or_insert((username, 1));
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Hash, PartialEq, Eq, Debug)]
