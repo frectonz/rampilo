@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
     }
     progress_bar.finish_and_clear();
 
-    let mut usernames: Vec<_> = usernames.into_iter().map(|(_, v)| v).collect();
+    let mut usernames: Vec<_> = usernames.into_values().collect();
     usernames.sort_by(|a, b| b.count.cmp(&a.count));
 
     println!(
@@ -184,7 +184,7 @@ fn extract_link(message: &Message, usernames: &mut Usernames) {
             .and_modify(|u| {
                 u.count += 1;
             })
-            .or_insert(Username::new(username));
+            .or_insert_with(|| Username::new(username));
     }
 }
 
@@ -210,7 +210,7 @@ fn extract_mentions(message: &Message, usernames: &mut Usernames) {
                 .and_modify(|u| {
                     u.count += 1;
                 })
-                .or_insert(Username::new(username));
+                .or_insert_with(|| Username::new(username));
         }
     }
 }
