@@ -1,7 +1,10 @@
 use std::{collections::HashMap, fs};
 
 use color_eyre::eyre::{self, Result};
-use grammers_client::{types::Message, Client, Config, SignInError};
+use grammers_client::{
+    types::{chat::Chat, Message},
+    Client, Config, SignInError,
+};
 use grammers_session::Session;
 use grammers_tl_types::enums::MessageEntity;
 use inquire::{validator::Validation, Password, Text};
@@ -72,6 +75,63 @@ impl ApiCredentials {
 struct Username {
     username: LinkType,
     count: usize,
+    metadata: Option<UsernameMetadata>,
+}
+
+impl Username {
+    fn new(username: LinkType) -> Self {
+        Self {
+            username,
+            count: 0,
+            metadata: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Hash, PartialEq, Eq, Debug)]
+enum LinkType {
+    Username(String),
+    Hash(String),
+    Mention(String),
+}
+
+impl ToString for LinkType {
+    fn to_string(&self) -> String {
+        match self {
+            LinkType::Username(username) => username.to_string(),
+            LinkType::Hash(hash) => hash.to_string(),
+            LinkType::Mention(username) => username.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct UsernameMetadata {
+    name: String,
+    #[serde(rename = "type")]
+    type_: UsernameType,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+enum UsernameType {
+    User,
+    Group,
+    Channel,
+}
+
+impl From<&Chat> for UsernameMetadata {
+    fn from(chat: &Chat) -> Self {
+        let type_ = match chat {
+            Chat::User(_) => UsernameType::User,
+            Chat::Group(_) => UsernameType::Group,
+            Chat::Channel(_) => UsernameType::Channel,
+        };
+
+        Self {
+            name: chat.name().to_string(),
+            type_,
+        }
+    }
 }
 
 type Usernames = HashMap<String, Username>;
@@ -123,6 +183,19 @@ async fn main() -> Result<()> {
     let mut usernames: Vec<_> = usernames.into_iter().map(|(_, v)| v).collect();
     usernames.sort_by(|a, b| b.count.cmp(&a.count));
 
+    for username in usernames.iter_mut() {
+        let entity_username = match username.username {
+            LinkType::Username(ref username) => username.as_str(),
+            LinkType::Mention(ref username) => username.as_str(),
+            LinkType::Hash(_) => continue,
+        };
+
+        let maybe_user = client_handle.resolve_username(entity_username).await?;
+        if let Some(ref chat) = maybe_user {
+            username.metadata = Some(chat.into());
+        }
+    }
+
     let json = serde_json::to_string_pretty(&usernames)?;
     let filename = format!("{}.json", username);
     fs::write(filename, json)?;
@@ -143,7 +216,7 @@ fn extract_link(message: &Message, usernames: &mut Usernames) {
             .and_modify(|u| {
                 u.count += 1;
             })
-            .or_insert(Username { username, count: 1 });
+            .or_insert(Username::new(username));
     }
 }
 
@@ -169,24 +242,7 @@ fn extract_mentions(message: &Message, usernames: &mut Usernames) {
                 .and_modify(|u| {
                     u.count += 1;
                 })
-                .or_insert(Username { username, count: 1 });
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Hash, PartialEq, Eq, Debug)]
-enum LinkType {
-    Username(String),
-    Hash(String),
-    Mention(String),
-}
-
-impl ToString for LinkType {
-    fn to_string(&self) -> String {
-        match self {
-            LinkType::Username(username) => username.to_string(),
-            LinkType::Hash(hash) => hash.to_string(),
-            LinkType::Mention(username) => username.to_string(),
+                .or_insert(Username::new(username));
         }
     }
 }
