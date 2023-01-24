@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs};
+use std::{collections::HashMap, fs, time::Duration};
 
 use color_eyre::eyre::{self, Result};
 use grammers_client::{
@@ -7,69 +7,15 @@ use grammers_client::{
 };
 use grammers_session::Session;
 use grammers_tl_types::enums::MessageEntity;
-use inquire::{validator::Validation, Password, Text};
+use indicatif::ProgressBar;
+use inquire::{Password, Text};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+mod credentials;
+use credentials::ApiCredentials;
+
 const SESSION_FILE: &str = "crawler.session";
-
-#[derive(Deserialize, Serialize)]
-struct ApiCredentials {
-    api_id: i32,
-    api_hash: String,
-}
-
-impl ApiCredentials {
-    fn load_from_file() -> Result<Self> {
-        let contents = fs::read_to_string("api_info.json")?;
-        let api_info: Self = serde_json::from_str(&contents)?;
-        Ok(api_info)
-    }
-
-    fn load_from_input() -> Result<Self> {
-        let api_id = Text::new("Enter your API ID: ")
-            .with_validator(|s: &str| {
-                let validation = s
-                    .parse::<i32>()
-                    .map(|_| Validation::Valid)
-                    .unwrap_or_else(|_| Validation::Invalid("API ID must be a number".into()));
-
-                Ok(validation)
-            })
-            .prompt()?;
-        let api_id = api_id.parse::<i32>()?;
-        let api_hash = Text::new("Enter your API hash: ").prompt()?;
-
-        let api_info = Self { api_id, api_hash };
-        let json = serde_json::to_string_pretty(&api_info)?;
-        fs::write("api_info.json", json)?;
-
-        Ok(api_info)
-    }
-
-    fn load() -> Result<Self> {
-        if let Ok(api_info) = Self::load_from_file() {
-            Ok(api_info)
-        } else {
-            Self::load_from_input()
-        }
-    }
-
-    fn save(&self) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self)?;
-        fs::write("api_info.json", json)?;
-
-        Ok(())
-    }
-
-    fn api_id(&self) -> i32 {
-        self.api_id
-    }
-
-    fn api_hash(&self) -> &str {
-        &self.api_hash
-    }
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Username {
@@ -82,7 +28,7 @@ impl Username {
     fn new(username: LinkType) -> Self {
         Self {
             username,
-            count: 0,
+            count: 1,
             metadata: None,
         }
     }
@@ -174,15 +120,28 @@ async fn main() -> Result<()> {
 
     let mut count = 0;
     let mut messages = client_handle.iter_messages(&chat);
+
+    let progress_bar = ProgressBar::new_spinner();
+    progress_bar.enable_steady_tick(Duration::from_millis(100));
     while let Some(message) = messages.next().await? {
         extract_link(&message, &mut usernames);
         extract_mentions(&message, &mut usernames);
         count += 1;
+        progress_bar.set_message(message.id().to_string());
     }
+    progress_bar.finish_and_clear();
 
     let mut usernames: Vec<_> = usernames.into_iter().map(|(_, v)| v).collect();
     usernames.sort_by(|a, b| b.count.cmp(&a.count));
 
+    println!(
+        "Found {} usernames from {} messages",
+        usernames.len(),
+        count
+    );
+    println!("Resolving usernames...");
+
+    let progress_bar = ProgressBar::new(usernames.len() as u64);
     for username in usernames.iter_mut() {
         let entity_username = match username.username {
             LinkType::Username(ref username) => username.as_str(),
@@ -190,11 +149,20 @@ async fn main() -> Result<()> {
             LinkType::Hash(_) => continue,
         };
 
-        let maybe_user = client_handle.resolve_username(entity_username).await?;
+        let maybe_user = client_handle
+            .resolve_username(entity_username)
+            .await
+            .ok()
+            .flatten();
         if let Some(ref chat) = maybe_user {
             username.metadata = Some(chat.into());
         }
+
+        progress_bar.inc(1);
     }
+    progress_bar.finish();
+
+    usernames.retain(|u| u.metadata.is_some());
 
     let json = serde_json::to_string_pretty(&usernames)?;
     let filename = format!("{}.json", username);
