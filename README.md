@@ -8,7 +8,7 @@ Don't worry, you only need to do this once. After that it will store your sessio
 
 For normal usage you only need to provide the username of the chat (group/channel) you want to crawl. It will show you progress bar as it crawls the chat. When it's done it will store the results in a file called `<username>.json` in the current directory. The output file will have the following schema.
 
-```json
+```text
 [
   {
     "username": {
